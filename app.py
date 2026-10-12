@@ -10,12 +10,16 @@ from config import BOT_TOKEN, WEB_APP_URL, WEBHOOK_SECRET
 from downloader import analyze
 
 logging.basicConfig(level=logging.INFO)
+# httpx request logs can include Telegram API URLs containing the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("mediamate")
 
 web = Flask(__name__)
 tg = build_app()
 loop = asyncio.new_event_loop()
 ready = threading.Event()
+startup_error = {"message": ""}
 
 
 def runner():
@@ -26,11 +30,12 @@ def runner():
         ready.set()
         logger.info("Telegram application initialized")
         loop.run_forever()
-    except Exception:
+    except Exception as exc:
+        startup_error["message"] = f"{type(exc).__name__}: {exc}"
         logger.exception("Telegram application failed to start")
 
 
-threading.Thread(target=runner, daemon=True).start()
+threading.Thread(target=runner, daemon=True, name="telegram-loop").start()
 
 
 @web.get("/")
@@ -48,7 +53,10 @@ def telegram_health():
     if not BOT_TOKEN:
         return jsonify(ok=False, error="BOT_TOKEN is missing"), 500
     if not ready.wait(timeout=5):
-        return jsonify(ok=False, error="Telegram application is not ready"), 503
+        return jsonify(
+            ok=False,
+            error=startup_error["message"] or "Telegram application is not ready",
+        ), 503
     try:
         future = asyncio.run_coroutine_threadsafe(tg.bot.get_webhook_info(), loop)
         info = future.result(timeout=15)
@@ -58,11 +66,11 @@ def telegram_health():
             expected_webhook=f"{WEB_APP_URL}/telegram/webhook" if WEB_APP_URL else "",
             pending_update_count=info.pending_update_count,
             last_error_message=info.last_error_message or "",
-            last_error_date=info.last_error_date.isoformat() if info.last_error_date else None,
+            last_error_date=str(info.last_error_date) if info.last_error_date else None,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Could not read webhook info")
-        return jsonify(ok=False, error="Could not read Telegram webhook info"), 500
+        return jsonify(ok=False, error=f"{type(exc).__name__}: {exc}"), 500
 
 
 @web.post("/api/analyze")
@@ -78,8 +86,18 @@ def api_analyze():
         return jsonify(error="Unsupported/private/unavailable URL"), 400
 
 
+def _log_update_result(future):
+    try:
+        future.result()
+    except Exception:
+        logger.exception("Telegram update processing failed")
+
+
 @web.post("/telegram/webhook")
 def telegram_webhook():
+    if not WEBHOOK_SECRET or WEBHOOK_SECRET == "change-me":
+        logger.error("WEBHOOK_SECRET is missing or insecure")
+        return "server configuration error", 500
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
         logger.warning("Rejected Telegram webhook: secret mismatch")
         return "forbidden", 403
@@ -88,10 +106,10 @@ def telegram_webhook():
     try:
         update = Update.de_json(request.get_json(force=True), tg.bot)
         future = asyncio.run_coroutine_threadsafe(tg.process_update(update), loop)
-        future.result(timeout=20)
+        future.add_done_callback(_log_update_result)
         return "ok", 200
     except Exception:
-        logger.exception("Telegram update processing failed")
+        logger.exception("Could not queue Telegram update")
         return "processing failed", 500
 
 
@@ -106,7 +124,7 @@ def set_webhook():
         logger.error("WEBHOOK_SECRET is missing or insecure")
         return
     if not ready.wait(timeout=20):
-        logger.error("Telegram application did not become ready")
+        logger.error("Telegram application did not become ready: %s", startup_error["message"] or "unknown error")
         return
 
     webhook_url = f"{WEB_APP_URL}/telegram/webhook"
@@ -126,6 +144,6 @@ def set_webhook():
         logger.exception("Webhook setup failed")
 
 
-threading.Thread(target=set_webhook, daemon=True).start()
+threading.Thread(target=set_webhook, daemon=True, name="webhook-setup").start()
 
 app = web
