@@ -10,7 +10,6 @@ from config import BOT_TOKEN, WEB_APP_URL, WEBHOOK_SECRET
 from downloader import analyze
 
 logging.basicConfig(level=logging.INFO)
-# httpx request logs can include Telegram API URLs containing the bot token.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("mediamate")
@@ -45,7 +44,7 @@ def index():
 
 @web.get("/health")
 def health():
-    return jsonify(ok=True, telegram_ready=ready.is_set())
+    return jsonify(ok=True, telegram_ready=ready.is_set(), loop_running=loop.is_running())
 
 
 @web.get("/health/telegram")
@@ -53,10 +52,7 @@ def telegram_health():
     if not BOT_TOKEN:
         return jsonify(ok=False, error="BOT_TOKEN is missing"), 500
     if not ready.wait(timeout=5):
-        return jsonify(
-            ok=False,
-            error=startup_error["message"] or "Telegram application is not ready",
-        ), 503
+        return jsonify(ok=False, error=startup_error["message"] or "Telegram application is not ready"), 503
     try:
         future = asyncio.run_coroutine_threadsafe(tg.bot.get_webhook_info(), loop)
         info = future.result(timeout=15)
@@ -101,8 +97,14 @@ def telegram_webhook():
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
         logger.warning("Rejected Telegram webhook: secret mismatch")
         return "forbidden", 403
-    if not ready.is_set():
+
+    # Telegram may retry pending updates immediately during a zero-downtime
+    # deploy. Wait briefly for the background PTB loop instead of returning
+    # repeated 503 responses while the worker finishes initialization.
+    if not ready.wait(timeout=10) or not loop.is_running():
+        logger.warning("Telegram webhook arrived before application was ready")
         return "telegram application not ready", 503
+
     try:
         update = Update.de_json(request.get_json(force=True), tg.bot)
         future = asyncio.run_coroutine_threadsafe(tg.process_update(update), loop)
@@ -123,7 +125,7 @@ def set_webhook():
     if not WEBHOOK_SECRET or WEBHOOK_SECRET == "change-me":
         logger.error("WEBHOOK_SECRET is missing or insecure")
         return
-    if not ready.wait(timeout=20):
+    if not ready.wait(timeout=30):
         logger.error("Telegram application did not become ready: %s", startup_error["message"] or "unknown error")
         return
 
