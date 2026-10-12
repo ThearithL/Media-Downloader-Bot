@@ -51,13 +51,13 @@ def health():
 def telegram_health():
     if not BOT_TOKEN:
         return jsonify(ok=False, error="BOT_TOKEN is missing"), 500
-    if not ready.wait(timeout=5):
-        return jsonify(ok=False, error=startup_error["message"] or "Telegram application is not ready"), 503
     try:
         future = asyncio.run_coroutine_threadsafe(tg.bot.get_webhook_info(), loop)
         info = future.result(timeout=15)
         return jsonify(
             ok=True,
+            telegram_ready=ready.is_set(),
+            loop_running=loop.is_running(),
             webhook_url=info.url or "",
             expected_webhook=f"{WEB_APP_URL}/telegram/webhook" if WEB_APP_URL else "",
             pending_update_count=info.pending_update_count,
@@ -66,7 +66,12 @@ def telegram_health():
         )
     except Exception as exc:
         logger.exception("Could not read webhook info")
-        return jsonify(ok=False, error=f"{type(exc).__name__}: {exc}"), 500
+        return jsonify(
+            ok=False,
+            telegram_ready=ready.is_set(),
+            loop_running=loop.is_running(),
+            error=f"{type(exc).__name__}: {exc}",
+        ), 500
 
 
 @web.post("/api/analyze")
@@ -98,17 +103,18 @@ def telegram_webhook():
         logger.warning("Rejected Telegram webhook: secret mismatch")
         return "forbidden", 403
 
-    # Telegram may retry pending updates immediately during a zero-downtime
-    # deploy. Wait briefly for the background PTB loop instead of returning
-    # repeated 503 responses while the worker finishes initialization.
-    if not ready.wait(timeout=10) or not loop.is_running():
-        logger.warning("Telegram webhook arrived before application was ready")
-        return "telegram application not ready", 503
+    # Do not reject valid Telegram updates just because a cross-thread readiness
+    # check races during a Render deploy. Queue the update on the PTB event loop;
+    # Telegram gets a fast 200 once the update is accepted for processing.
+    if not loop.is_running():
+        logger.error("Telegram event loop is not running")
+        return "telegram loop unavailable", 503
 
     try:
         update = Update.de_json(request.get_json(force=True), tg.bot)
         future = asyncio.run_coroutine_threadsafe(tg.process_update(update), loop)
         future.add_done_callback(_log_update_result)
+        logger.info("Telegram update queued: %s", update.update_id)
         return "ok", 200
     except Exception:
         logger.exception("Could not queue Telegram update")
