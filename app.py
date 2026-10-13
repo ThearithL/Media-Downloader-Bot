@@ -1,12 +1,10 @@
-import asyncio
 import logging
 import threading
 
 from flask import Flask, jsonify, render_template, request
-from telegram import Update
 
 from bot import build_app
-from config import BOT_TOKEN, WEB_APP_URL, WEBHOOK_SECRET
+from config import BOT_TOKEN
 from downloader import analyze
 
 logging.basicConfig(level=logging.INFO)
@@ -15,32 +13,46 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("mediamate")
 
 web = Flask(__name__)
-tg = build_app()
-loop = asyncio.new_event_loop()
 ready = threading.Event()
 startup_error = {"message": ""}
 
 
-def runner():
-    asyncio.set_event_loop(loop)
-    try:
-        # Keep initialize/start and all later Bot API calls on the same running
-        # event loop. Running them before run_forever can leave HTTPX resources
-        # tied to a non-running loop when webhook handlers try to reply.
-        async def bootstrap():
-            await tg.initialize()
-            await tg.start()
-            ready.set()
-            logger.info("Telegram application initialized")
+def telegram_runner():
+    """Run Telegram long polling in its own thread.
 
-        loop.create_task(bootstrap())
-        loop.run_forever()
+    This avoids the Flask/Gunicorn -> cross-thread asyncio webhook bridge that
+    was accepting updates but intermittently leaving the PTB application in a
+    not-ready state on Render.
+    """
+    if not BOT_TOKEN:
+        startup_error["message"] = "BOT_TOKEN is missing"
+        logger.error(startup_error["message"])
+        return
+
+    try:
+        tg = build_app()
+
+        async def on_start(application):
+            # A bot cannot use getUpdates while a webhook is configured.
+            # Remove the old webhook first, then polling owns update delivery.
+            await application.bot.delete_webhook(drop_pending_updates=False)
+            ready.set()
+            logger.info("Telegram polling ready; webhook removed")
+
+        tg.post_init = on_start
+        tg.run_polling(
+            allowed_updates=None,
+            drop_pending_updates=False,
+            close_loop=True,
+            stop_signals=None,
+        )
     except Exception as exc:
         startup_error["message"] = f"{type(exc).__name__}: {exc}"
-        logger.exception("Telegram application failed to start")
+        ready.clear()
+        logger.exception("Telegram polling failed")
 
 
-threading.Thread(target=runner, daemon=True, name="telegram-loop").start()
+threading.Thread(target=telegram_runner, daemon=True, name="telegram-polling").start()
 
 
 @web.get("/")
@@ -50,31 +62,22 @@ def index():
 
 @web.get("/health")
 def health():
-    return jsonify(ok=True, telegram_ready=ready.is_set(), loop_running=loop.is_running())
+    return jsonify(
+        ok=True,
+        telegram_ready=ready.is_set(),
+        telegram_mode="polling",
+        telegram_error=startup_error["message"],
+    )
 
 
 @web.get("/health/telegram")
 def telegram_health():
-    if not BOT_TOKEN:
-        return jsonify(ok=False, error="BOT_TOKEN is missing"), 500
-    if not ready.wait(timeout=5):
-        return jsonify(ok=False, error=startup_error["message"] or "Telegram application is not ready"), 503
-    try:
-        future = asyncio.run_coroutine_threadsafe(tg.bot.get_webhook_info(), loop)
-        info = future.result(timeout=15)
-        return jsonify(
-            ok=True,
-            telegram_ready=ready.is_set(),
-            loop_running=loop.is_running(),
-            webhook_url=info.url or "",
-            expected_webhook=f"{WEB_APP_URL}/telegram/webhook" if WEB_APP_URL else "",
-            pending_update_count=info.pending_update_count,
-            last_error_message=info.last_error_message or "",
-            last_error_date=str(info.last_error_date) if info.last_error_date else None,
-        )
-    except Exception as exc:
-        logger.exception("Could not read webhook info")
-        return jsonify(ok=False, error=f"{type(exc).__name__}: {exc}"), 500
+    status = 200 if ready.is_set() else 503
+    return jsonify(
+        ok=ready.is_set(),
+        mode="polling",
+        error=startup_error["message"],
+    ), status
 
 
 @web.post("/api/analyze")
@@ -90,68 +93,11 @@ def api_analyze():
         return jsonify(error="Unsupported/private/unavailable URL"), 400
 
 
-def _log_update_result(future):
-    try:
-        future.result()
-        logger.info("Telegram update processed successfully")
-    except Exception:
-        logger.exception("Telegram update processing failed")
-
-
+# Keep this endpoint during migration so stale Telegram webhook retries receive
+# a successful response while delete_webhook propagates. New updates use polling.
 @web.post("/telegram/webhook")
-def telegram_webhook():
-    if not WEBHOOK_SECRET or WEBHOOK_SECRET == "change-me":
-        logger.error("WEBHOOK_SECRET is missing or insecure")
-        return "server configuration error", 500
-    if request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
-        logger.warning("Rejected Telegram webhook: secret mismatch")
-        return "forbidden", 403
-    if not ready.is_set() or not loop.is_running():
-        logger.warning("Telegram webhook received before application was ready")
-        return "telegram application not ready", 503
+def retired_webhook():
+    return "ok", 200
 
-    try:
-        update = Update.de_json(request.get_json(force=True), tg.bot)
-        future = asyncio.run_coroutine_threadsafe(tg.process_update(update), loop)
-        future.add_done_callback(_log_update_result)
-        logger.info("Telegram update queued: %s", update.update_id)
-        return "ok", 200
-    except Exception:
-        logger.exception("Could not queue Telegram update")
-        return "processing failed", 500
-
-
-def set_webhook():
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN is missing")
-        return
-    if not WEB_APP_URL:
-        logger.error("WEB_APP_URL is missing")
-        return
-    if not WEBHOOK_SECRET or WEBHOOK_SECRET == "change-me":
-        logger.error("WEBHOOK_SECRET is missing or insecure")
-        return
-    if not ready.wait(timeout=30):
-        logger.error("Telegram application did not become ready: %s", startup_error["message"] or "unknown error")
-        return
-
-    webhook_url = f"{WEB_APP_URL}/telegram/webhook"
-    try:
-        future = asyncio.run_coroutine_threadsafe(
-            tg.bot.set_webhook(
-                url=webhook_url,
-                secret_token=WEBHOOK_SECRET,
-                drop_pending_updates=False,
-                allowed_updates=Update.ALL_TYPES,
-            ),
-            loop,
-        )
-        future.result(timeout=20)
-        logger.info("Webhook configured: %s", webhook_url)
-    except Exception:
-        logger.exception("Webhook setup failed")
-
-
-threading.Thread(target=set_webhook, daemon=True, name="webhook-setup").start()
 
 app = web
