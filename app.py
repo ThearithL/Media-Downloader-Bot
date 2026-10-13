@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 
@@ -18,38 +19,41 @@ startup_error = {"message": ""}
 
 
 def telegram_runner():
-    """Run Telegram long polling in its own thread.
-
-    This avoids the Flask/Gunicorn -> cross-thread asyncio webhook bridge that
-    was accepting updates but intermittently leaving the PTB application in a
-    not-ready state on Render.
-    """
+    """Run Telegram long polling in its own thread with an explicit event loop."""
     if not BOT_TOKEN:
         startup_error["message"] = "BOT_TOKEN is missing"
         logger.error(startup_error["message"])
         return
 
+    # Python 3.12 does not automatically create an asyncio loop in a new
+    # thread. python-telegram-bot run_polling() expects one to exist.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     try:
         tg = build_app()
 
         async def on_start(application):
-            # A bot cannot use getUpdates while a webhook is configured.
-            # Remove the old webhook first, then polling owns update delivery.
+            # getUpdates cannot run while a webhook is configured.
             await application.bot.delete_webhook(drop_pending_updates=False)
             ready.set()
+            startup_error["message"] = ""
             logger.info("Telegram polling ready; webhook removed")
 
         tg.post_init = on_start
         tg.run_polling(
             allowed_updates=None,
             drop_pending_updates=False,
-            close_loop=True,
+            close_loop=False,
             stop_signals=None,
         )
     except Exception as exc:
         startup_error["message"] = f"{type(exc).__name__}: {exc}"
         ready.clear()
         logger.exception("Telegram polling failed")
+    finally:
+        if not loop.is_closed():
+            loop.close()
 
 
 threading.Thread(target=telegram_runner, daemon=True, name="telegram-polling").start()
@@ -93,8 +97,8 @@ def api_analyze():
         return jsonify(error="Unsupported/private/unavailable URL"), 400
 
 
-# Keep this endpoint during migration so stale Telegram webhook retries receive
-# a successful response while delete_webhook propagates. New updates use polling.
+# Keep this endpoint temporarily so stale webhook retries receive 200 while
+# delete_webhook propagates. New Telegram updates are handled by polling.
 @web.post("/telegram/webhook")
 def retired_webhook():
     return "ok", 200
