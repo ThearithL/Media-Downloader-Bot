@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 from urllib.parse import urlparse
 
@@ -9,15 +10,17 @@ from yt_dlp.utils import DownloadError
 
 BASE_OPTS = {
     'quiet': True,
-    'no_warnings': True,
+    # Keep warnings enabled: yt-dlp uses them to report JS runtime / PO-token
+    # requirements when YouTube changes extraction behavior.
+    'no_warnings': False,
     'noplaylist': True,
-    'socket_timeout': 20,
+    'socket_timeout': 25,
     'retries': 3,
     'fragment_retries': 3,
     'extractor_retries': 3,
     'geo_bypass': True,
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
     },
 }
@@ -28,19 +31,21 @@ def _is_youtube(url):
     return host == 'youtu.be' or host.endswith('youtube.com') or host.endswith('youtube-nocookie.com')
 
 
-def _extract(url, download=False, extra=None):
-    """Extract metadata/media with safe public-client fallbacks for YouTube."""
-    attempts = [{}]
-    if _is_youtube(url):
-        # YouTube changes player responses frequently. Trying official public
-        # client profiles makes extraction more resilient on cloud hosts.
-        attempts = [
-            {'extractor_args': {'youtube': {'player_client': ['android_vr', 'web_safari']}}},
-            {'extractor_args': {'youtube': {'player_client': ['web', 'mweb']}}},
-            {},
-        ]
+def _youtube_attempts():
+    # Current yt-dlp YouTube extraction requires a JS runtime for many videos.
+    # Prefer web/default clients first and keep Android only as a last fallback.
+    return [
+        {'extractor_args': {'youtube': {'player_client': ['default', 'web_embedded']}}},
+        {'extractor_args': {'youtube': {'player_client': ['web', 'mweb']}}},
+        {'extractor_args': {'youtube': {'player_client': ['android']}}},
+        {},
+    ]
 
+
+def _extract(url, download=False, extra=None):
+    attempts = _youtube_attempts() if _is_youtube(url) else [{}]
     last_error = None
+
     for attempt in attempts:
         opts = dict(BASE_OPTS)
         opts.update(attempt)
@@ -48,9 +53,11 @@ def _extract(url, download=False, extra=None):
             opts.update(extra)
         try:
             with YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=download), ydl
+                info = ydl.extract_info(url, download=download)
+                return info, ydl
         except DownloadError as exc:
             last_error = exc
+
     raise last_error or DownloadError('Unable to extract media information')
 
 
@@ -75,11 +82,17 @@ def analyze(url):
 def download(url, kind='mp4', quality='720'):
     outdir = tempfile.mkdtemp(prefix='media_')
     tmpl = os.path.join(outdir, '%(title).80s-%(id)s.%(ext)s')
+
     if kind == 'mp3':
+        if not shutil.which('ffmpeg'):
+            shutil.rmtree(outdir, ignore_errors=True)
+            raise RuntimeError('FFmpeg is not installed on this server')
         extra = {
             'format': 'bestaudio/best',
             'outtmpl': tmpl,
-            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
+            'postprocessors': [
+                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}
+            ],
         }
     else:
         q = int(quality) if str(quality).isdigit() else 720
@@ -89,12 +102,18 @@ def download(url, kind='mp4', quality='720'):
             'outtmpl': tmpl,
         }
 
-    info, ydl = _extract(url, download=True, extra=extra)
-    path = ydl.prepare_filename(info)
-    if kind == 'mp3':
-        path = os.path.splitext(path)[0] + '.mp3'
-    elif not os.path.exists(path):
-        mp4 = os.path.splitext(path)[0] + '.mp4'
-        if os.path.exists(mp4):
-            path = mp4
-    return path, outdir
+    try:
+        info, ydl = _extract(url, download=True, extra=extra)
+        path = ydl.prepare_filename(info)
+        if kind == 'mp3':
+            path = os.path.splitext(path)[0] + '.mp3'
+        elif not os.path.exists(path):
+            mp4 = os.path.splitext(path)[0] + '.mp4'
+            if os.path.exists(mp4):
+                path = mp4
+        if not os.path.exists(path):
+            raise RuntimeError('Downloaded media file was not created')
+        return path, outdir
+    except Exception:
+        shutil.rmtree(outdir, ignore_errors=True)
+        raise
