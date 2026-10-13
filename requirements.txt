@@ -2,6 +2,6 @@ python-telegram-bot==21.10
 Flask==3.1.0
 gunicorn==23.0.0
 python-dotenv==1.0.1
-yt-dlp[default]==2026.10.10.233141.dev0
+yt-dlp[default] @ https://github.com/yt-dlp/yt-dlp/archive/refs/heads/master.tar.gz
 bgutil-ytdlp-pot-provider==2.0.0
 psycopg[binary]>=3.2.3
