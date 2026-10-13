@@ -24,10 +24,16 @@ startup_error = {"message": ""}
 def runner():
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(tg.initialize())
-        loop.run_until_complete(tg.start())
-        ready.set()
-        logger.info("Telegram application initialized")
+        # Keep initialize/start and all later Bot API calls on the same running
+        # event loop. Running them before run_forever can leave HTTPX resources
+        # tied to a non-running loop when webhook handlers try to reply.
+        async def bootstrap():
+            await tg.initialize()
+            await tg.start()
+            ready.set()
+            logger.info("Telegram application initialized")
+
+        loop.create_task(bootstrap())
         loop.run_forever()
     except Exception as exc:
         startup_error["message"] = f"{type(exc).__name__}: {exc}"
@@ -51,6 +57,8 @@ def health():
 def telegram_health():
     if not BOT_TOKEN:
         return jsonify(ok=False, error="BOT_TOKEN is missing"), 500
+    if not ready.wait(timeout=5):
+        return jsonify(ok=False, error=startup_error["message"] or "Telegram application is not ready"), 503
     try:
         future = asyncio.run_coroutine_threadsafe(tg.bot.get_webhook_info(), loop)
         info = future.result(timeout=15)
@@ -66,12 +74,7 @@ def telegram_health():
         )
     except Exception as exc:
         logger.exception("Could not read webhook info")
-        return jsonify(
-            ok=False,
-            telegram_ready=ready.is_set(),
-            loop_running=loop.is_running(),
-            error=f"{type(exc).__name__}: {exc}",
-        ), 500
+        return jsonify(ok=False, error=f"{type(exc).__name__}: {exc}"), 500
 
 
 @web.post("/api/analyze")
@@ -90,6 +93,7 @@ def api_analyze():
 def _log_update_result(future):
     try:
         future.result()
+        logger.info("Telegram update processed successfully")
     except Exception:
         logger.exception("Telegram update processing failed")
 
@@ -102,13 +106,9 @@ def telegram_webhook():
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != WEBHOOK_SECRET:
         logger.warning("Rejected Telegram webhook: secret mismatch")
         return "forbidden", 403
-
-    # Do not reject valid Telegram updates just because a cross-thread readiness
-    # check races during a Render deploy. Queue the update on the PTB event loop;
-    # Telegram gets a fast 200 once the update is accepted for processing.
-    if not loop.is_running():
-        logger.error("Telegram event loop is not running")
-        return "telegram loop unavailable", 503
+    if not ready.is_set() or not loop.is_running():
+        logger.warning("Telegram webhook received before application was ready")
+        return "telegram application not ready", 503
 
     try:
         update = Update.de_json(request.get_json(force=True), tg.bot)
