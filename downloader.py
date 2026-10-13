@@ -16,11 +16,11 @@ BASE_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'noplaylist': True,
-    'socket_timeout': 20,
-    'retries': 2,
-    'fragment_retries': 2,
-    'extractor_retries': 2,
-    'file_access_retries': 2,
+    'socket_timeout': 15,
+    'retries': 1,
+    'fragment_retries': 1,
+    'extractor_retries': 1,
+    'file_access_retries': 1,
     'concurrent_fragment_downloads': 8,
     'buffersize': 1024 * 1024,
     'http_chunk_size': 10 * 1024 * 1024,
@@ -88,16 +88,26 @@ def _log_youtube_diagnostics_once():
 
 
 def _youtube_attempts():
+    # The PO-token provider is the maintained path for current mweb playback.
+    # Keep one secondary non-authenticated client as a fallback. Repeating many
+    # blocked clients only makes Telegram users wait for the same server-side result.
     server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
     return [
-        ('auto', {}),
         ('mweb+bgutil', {'extractor_args': {
             'youtube': {'player_client': ['mweb']},
             'youtubepot-bgutilscript': {'server_home': [server_home]},
         }}),
         ('web_embedded', {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}}),
-        ('android_vr', {'extractor_args': {'youtube': {'player_client': ['android_vr']}}}),
     ]
+
+
+def _looks_like_server_block(exc):
+    detail = str(exc).lower()
+    return any(marker in detail for marker in (
+        'failed to extract any player response',
+        '429', 'too many requests', '403', 'forbidden',
+        'ip is likely being blocked', 'confirm you’re not a bot', "confirm you're not a bot",
+    ))
 
 
 def _should_stop_youtube_retry(exc):
@@ -115,6 +125,8 @@ def _extract(url, download=False, extra=None):
         _log_youtube_diagnostics_once()
     attempts = _youtube_attempts() if youtube else [('default', {})]
     last_error = None
+    server_block_count = 0
+
     for label, attempt in attempts:
         opts = dict(BASE_OPTS)
         opts.update(attempt)
@@ -133,9 +145,17 @@ def _extract(url, download=False, extra=None):
             last_error = exc
             if youtube:
                 logger.warning('YouTube extraction failed attempt=%s error=%s', label, str(exc)[:700])
+                if _looks_like_server_block(exc):
+                    server_block_count += 1
             if youtube and _should_stop_youtube_retry(exc):
                 logger.warning('YouTube retries stopped because the source reported an access/IP/auth restriction')
                 break
+
+    if youtube and server_block_count >= len(attempts):
+        raise DownloadError(
+            'YouTube rejected player responses from this server network. '
+            'The runtime and PO-token provider are installed, but this hosting egress cannot currently obtain a usable player response.'
+        )
     raise last_error or DownloadError('Unable to extract media information')
 
 
