@@ -31,10 +31,7 @@ def persistent_menu():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        'សួស្តី 👋\nផ្ញើ public media link ដែលអ្នកមានសិទ្ធិទាញយក ឬជ្រើស Menu ខាងក្រោម។\n\nSend an authorized public media link or choose a menu.',
-        reply_markup=persistent_menu(),
-    )
+    await update.effective_message.reply_text('សួស្តី 👋\nផ្ញើ public media link ដែលអ្នកមានសិទ្ធិទាញយក ឬជ្រើស Menu ខាងក្រោម។\n\nSend an authorized public media link or choose a menu.', reply_markup=persistent_menu())
     await update.effective_message.reply_text('⚡ Quick actions', reply_markup=home_keyboard())
 
 
@@ -43,12 +40,7 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        '🔗 Paste a supported public URL. I will show metadata and available quality.\n'
-        '🎬 MP4 / 🎵 MP3 are available when the source permits extraction.\n'
-        '🔒 Private/DRM-protected content is not bypassed.',
-        reply_markup=persistent_menu(),
-    )
+    await update.effective_message.reply_text('🔗 Paste a supported public URL. I will show metadata and available quality.\n🎬 MP4 / 🎵 MP3 are available when the source permits extraction.\n🔒 Private/DRM-protected content is not bypassed.', reply_markup=persistent_menu())
 
 
 async def handle_menu_name(message, name):
@@ -73,6 +65,23 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_menu_name(q.message, q.data.split(':', 1)[1])
 
 
+def friendly_extract_error(exc):
+    detail = str(exc).lower()
+    if '429' in detail or 'too many requests' in detail:
+        return '⏳ YouTube/Source កំពុង rate-limit server (429)។ សូមរង់ចាំបន្តិច ហើយសាកម្តងទៀត។'
+    if '403' in detail or 'forbidden' in detail:
+        return '🚫 YouTube/Source បានបដិសេធ request ពី server (403)។ សូមសាកពេលក្រោយ ឬ source ផ្សេង។'
+    if 'sign in' in detail or 'cookies' in detail or 'login' in detail:
+        return '🔐 Media នេះត្រូវការ authorized login/cookies។ Bot មិន bypass private/restricted media ទេ។'
+    if 'javascript runtime' in detail or 'deno' in detail or 'ejs' in detail:
+        return '⚙️ Server ខ្វះ JavaScript runtime សម្រាប់ YouTube extraction។ ត្រូវ deploy ជា Docker ដែលមាន Deno។'
+    if 'player response' in detail:
+        return '❌ YouTube extraction មិនបានទទួល player response។ yt-dlp/runtime ឬ YouTube server access ត្រូវបានរារាំង។'
+    if 'unsupported url' in detail:
+        return '❌ Link នេះមិនទាន់ support ទេ។'
+    return '❌ មិនអាច Analyze Link នេះបានទេ។ Link អាច private, unsupported ឬ source មិនអាចចូលបាន។'
+
+
 async def analyze_and_reply(message, context, url):
     msg = await message.reply_text('🔍 កំពុងពិនិត្យ Link...')
     try:
@@ -94,14 +103,7 @@ async def analyze_and_reply(message, context, url):
                 logger.warning('Could not send thumbnail', exc_info=True)
     except Exception as exc:
         logger.exception('Analyze failed for URL: %s', url)
-        detail = str(exc)
-        if 'Sign in' in detail or 'cookies' in detail.lower():
-            text = '❌ Source នេះត្រូវការ login/cookies។ Bot មិនអាច bypass private/restricted media បានទេ។'
-        elif 'player response' in detail.lower():
-            text = '❌ YouTube បានផ្លាស់ប្តូរ player response។ សូមសាកម្តងទៀត ឬ link ផ្សេង។'
-        else:
-            text = '❌ មិនអាច Analyze Link នេះបានទេ។ Link អាច private, unsupported ឬ source បានផ្លាស់ប្តូរ។'
-        await msg.edit_text(text)
+        await msg.edit_text(friendly_extract_error(exc))
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,9 +154,9 @@ async def dl_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await q.message.reply_video(f, caption=media_caption, supports_streaming=True)
         await status.edit_text(f'✅ ទាញយកបានជោគជ័យ!\nDownload completed successfully.\n\n📦 Format: {format_name}\n💾 Size: {size_mb:.1f} MB\n🎉 File បានផ្ញើរួចរាល់។')
-    except Exception:
+    except Exception as exc:
         logger.exception('Download failed: kind=%s quality=%s url=%s', kind, quality, url)
-        await status.edit_text('❌ Download/convert failed. សូមសាក quality ផ្សេង ឬ link ផ្សេង។')
+        await status.edit_text(friendly_extract_error(exc))
     finally:
         if outdir:
             shutil.rmtree(outdir, ignore_errors=True)
