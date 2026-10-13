@@ -1,1 +1,47 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>MediaMate</title><link rel="stylesheet" href="/static/style.css"><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body><main><header><div><small>Telegram Mini App</small><h1>MediaMate</h1></div><button id="theme">◐</button></header><section class="hero"><h2>📥 Media Downloader</h2><p>Paste an authorized public media link to inspect available media.</p><div class="input"><input id="url" type="url" placeholder="https://..."><button id="analyze">Analyze</button></div><p id="status"></p></section><section id="result" class="card hidden"><img id="thumb" alt="Thumbnail"><div><h3 id="title"></h3><p id="meta"></p><div id="qualities" class="chips"></div><p class="note">Download is handled in the Telegram bot. Send the same link to the bot and choose MP4/MP3.</p></div></section><nav><button data-tab="download">📥<span>Download</span></button><button>🎵<span>MP3</span></button><button>🎬<span>MP4</span></button><button>📜<span>History</span></button><button>⚙️<span>Settings</span></button></nav></main><script src="/static/app.js"></script></body></html>
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>MediaMate</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <div><small>Telegram Mini App</small><h1>MediaMate</h1></div>
+    <div class="header-actions"><button id="back" class="icon-btn hidden">←</button><button id="theme" class="icon-btn">◐</button></div>
+  </header>
+
+  <section id="downloadView" class="view">
+    <section class="hero">
+      <h2>📥 Media Downloader</h2>
+      <p>Paste an authorized public media link to inspect available media.</p>
+      <div class="input"><input id="url" type="url" placeholder="https://..."><button id="analyze">Analyze</button></div>
+      <p id="status"></p>
+    </section>
+    <section id="result" class="card hidden">
+      <img id="thumb" alt="Thumbnail">
+      <div>
+        <h3 id="title"></h3><p id="meta"></p><div id="qualities" class="chips"></div>
+        <div class="actions"><button id="mp3Action">🎵 MP3</button><button id="mp4Action">🎬 MP4</button><button id="favoriteAction">⭐ Favorite</button></div>
+        <p class="note">Choose MP3/MP4 to send this link to the Telegram bot for download.</p>
+      </div>
+    </section>
+  </section>
+
+  <section id="historyView" class="view hidden"><section class="hero"><h2>📜 History</h2><div id="historyList" class="list"></div><button id="clearHistory" class="secondary">Clear history</button></section></section>
+  <section id="settingsView" class="view hidden"><section class="hero"><h2>⚙️ Settings</h2><label>Language<select id="language"><option value="en">English</option><option value="km">ខ្មែរ</option></select></label><label class="setting-row"><span>Open expanded</span><input id="expanded" type="checkbox"></label><p class="note">Settings are saved on this device.</p></section></section>
+
+  <nav>
+    <button data-tab="download">📥<span>Download</span></button>
+    <button data-tab="mp3">🎵<span>MP3</span></button>
+    <button data-tab="mp4">🎬<span>MP4</span></button>
+    <button data-tab="history">📜<span>History</span></button>
+    <button data-tab="settings">⚙️<span>Settings</span></button>
+  </nav>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
