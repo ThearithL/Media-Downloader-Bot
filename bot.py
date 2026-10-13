@@ -40,7 +40,7 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text('🔗 Paste a supported public URL. I will show metadata and available quality.\n🎬 MP4 / 🎵 MP3 are available when the source permits extraction.\n🔒 Private/DRM-protected content is not bypassed.', reply_markup=persistent_menu())
+    await update.effective_message.reply_text('🔗 Paste a supported public URL. I will show metadata and available quality.\n🎬 MP4 / 🎵 MP3 are available when the source permits extraction.\n📎 Uploaded video/image/file receives an immediate acknowledgement.\n🔒 Private/DRM-protected content is not bypassed.', reply_markup=persistent_menu())
 
 
 async def handle_menu_name(message, name):
@@ -48,7 +48,7 @@ async def handle_menu_name(message, name):
         '📥 Download':'📥 ផ្ញើ Link មកខ្ញុំ ដើម្បី Analyze និង Download។',
         '🎵 MP3':'🎵 ផ្ញើ Link មកខ្ញុំ បន្ទាប់មកជ្រើស MP3។',
         '🎬 MP4':'🎬 ផ្ញើ Link មកខ្ញុំ ហើយជ្រើស video quality។',
-        '🖼️ Image':'🖼️ Thumbnail នឹងបង្ហាញបើ source មាន។',
+        '🖼️ Image':'🖼️ ផ្ញើរូបភាពមក Bot បានដោយផ្ទាល់។',
         '📜 History':'📜 History មាននៅក្នុង Mini App។',
         '⭐ Favorites':'⭐ Favorites មាននៅក្នុង Mini App។',
         '📊 Statistics':'📊 Statistics នឹងបន្ថែមនៅ version បន្ទាប់។',
@@ -82,8 +82,9 @@ def friendly_extract_error(exc):
     return '❌ មិនអាច Analyze Link នេះបានទេ។ Link អាច private, unsupported ឬ source មិនអាចចូលបាន។'
 
 
-async def analyze_and_reply(message, context, url):
-    msg = await message.reply_text('🔍 កំពុងពិនិត្យ Link...')
+async def analyze_and_reply(message, context, url, status=None):
+    # Send the acknowledgement before doing any network/extractor work.
+    msg = status or await message.reply_text('⚡ Received • កំពុងពិនិត្យ Link...')
     try:
         data = await asyncio.to_thread(analyze, url)
         context.user_data['url'] = url
@@ -111,8 +112,39 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in {item for row in MENU for item in row}:
         return await handle_menu_name(update.effective_message, text)
     if text.startswith(('http://', 'https://')):
-        return await analyze_and_reply(update.effective_message, context, text)
+        status = await update.effective_message.reply_text('⚡ Received • Processing link...')
+        return await analyze_and_reply(update.effective_message, context, text, status=status)
     await update.effective_message.reply_text('🔗 សូមផ្ញើ media link ឬជ្រើស Menu ខាងក្រោម។', reply_markup=persistent_menu())
+
+
+async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Acknowledge Telegram uploads immediately instead of silently ignoring them."""
+    message = update.effective_message
+    if message.video:
+        media = message.video
+        kind = 'Video'
+    elif message.photo:
+        media = message.photo[-1]
+        kind = 'Image'
+    elif message.animation:
+        media = message.animation
+        kind = 'Animation'
+    elif message.audio:
+        media = message.audio
+        kind = 'Audio'
+    elif message.document:
+        media = message.document
+        kind = 'File'
+    else:
+        return
+
+    size = getattr(media, 'file_size', None)
+    size_text = f' • {size / (1024 * 1024):.1f} MB' if size else ''
+    await message.reply_text(
+        f'⚡ Received {kind}{size_text}\n✅ Bot បានទទួល file របស់អ្នកភ្លាមៗ។\n\n'
+        'សម្រាប់ download/convert ពី social media សូមផ្ញើ public link។',
+        reply_markup=persistent_menu(),
+    )
 
 
 async def webapp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,7 +158,8 @@ async def webapp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url.startswith(('http://', 'https://')):
         return await message.reply_text('❌ Invalid URL from Mini App.')
     context.user_data['url'] = url
-    await analyze_and_reply(message, context, url)
+    status = await message.reply_text('⚡ Received • Processing Mini App link...')
+    await analyze_and_reply(message, context, url, status=status)
 
 
 async def dl_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -136,7 +169,7 @@ async def dl_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url:
         return await q.message.reply_text('សូមផ្ញើ Link ម្តងទៀត។')
     _, kind, quality = q.data.split(':')
-    status = await q.message.reply_text('⚙️ Processing...')
+    status = await q.message.reply_text('⚡ Download request received • Processing...')
     outdir = None
     try:
         path, outdir = await asyncio.to_thread(download, url, kind, quality)
@@ -189,6 +222,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(dl_cb, pattern=r'^dl:'))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r'^menu:'))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, webapp_handler))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.PHOTO | filters.ANIMATION | filters.AUDIO | filters.Document.ALL, media_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_error_handler(error_handler)
     return app
