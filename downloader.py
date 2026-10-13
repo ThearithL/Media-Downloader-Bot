@@ -12,22 +12,17 @@ BASE_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'noplaylist': True,
-    'socket_timeout': 15,
+    'socket_timeout': 20,
     'retries': 2,
     'fragment_retries': 2,
-    'extractor_retries': 1,
+    'extractor_retries': 2,
     'file_access_retries': 2,
     'concurrent_fragment_downloads': 8,
     'buffersize': 1024 * 1024,
     'http_chunk_size': 10 * 1024 * 1024,
-    'geo_bypass': True,
     'windowsfilenames': True,
     'trim_file_name': 80,
     'js_runtimes': {'deno': {}},
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-    },
 }
 
 
@@ -61,15 +56,16 @@ def _platform(url):
 
 
 def _youtube_attempts():
-    # Current yt-dlp guidance recommends a PO-token provider with mweb.
-    # The bgutil provider is installed in the Docker image and uses Deno.
+    # First let the current yt-dlp build choose its maintained YouTube clients.
+    # If that fails, try the documented mweb + bgutil PO-token setup.
+    # Do not use cookies/account authentication or bypass private/DRM media.
     server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
     return [
+        {},
         {'extractor_args': {
             'youtube': {'player_client': ['mweb']},
             'youtubepot-bgutilscript': {'server_home': [server_home]},
         }},
-        {},
         {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}},
         {'extractor_args': {'youtube': {'player_client': ['android_vr']}}},
     ]
@@ -80,6 +76,7 @@ def _should_stop_youtube_retry(exc):
     return any(marker in detail for marker in (
         '429', 'too many requests', '403', 'forbidden',
         'sign in', 'login required', 'private video', 'members-only',
+        'ip is likely being blocked', 'confirm you’re not a bot', "confirm you're not a bot",
     ))
 
 
