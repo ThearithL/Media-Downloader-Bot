@@ -23,6 +23,7 @@ BASE_OPTS = {
     'geo_bypass': True,
     'windowsfilenames': True,
     'trim_file_name': 80,
+    'js_runtimes': {'deno': {}},
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -60,22 +61,22 @@ def _platform(url):
 
 
 def _youtube_attempts():
-    # Let current yt-dlp choose its maintained default clients first. Forced
-    # client profiles can become stale when YouTube changes Innertube/player
-    # behavior. These fallbacks remain useful for public videos that work with
-    # a token-free client. We do not use account cookies or bypass private/DRM.
+    # Current yt-dlp guidance recommends a PO-token provider with mweb.
+    # The bgutil provider is installed in the Docker image and uses Deno.
+    server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
     return [
+        {'extractor_args': {
+            'youtube': {'player_client': ['mweb']},
+            'youtubepot-bgutilscript': {'server_home': [server_home]},
+        }},
         {},
         {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}},
-        {'extractor_args': {'youtube': {'player_client': ['web_safari']}}},
         {'extractor_args': {'youtube': {'player_client': ['android_vr']}}},
     ]
 
 
 def _should_stop_youtube_retry(exc):
     detail = str(exc).lower()
-    # Retrying several clients against an already rate-limited/blocked host only
-    # makes the situation worse. Return the first useful error immediately.
     return any(marker in detail for marker in (
         '429', 'too many requests', '403', 'forbidden',
         'sign in', 'login required', 'private video', 'members-only',
