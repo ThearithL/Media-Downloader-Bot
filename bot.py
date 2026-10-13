@@ -4,7 +4,7 @@ import logging
 import os
 import shutil
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, WebAppInfo, BotCommand
 from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
@@ -23,38 +23,54 @@ def home_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
+def persistent_menu():
+    rows = [[KeyboardButton(x) for x in row] for row in MENU]
+    if WEB_APP_URL:
+        rows.append([KeyboardButton('📱 Open Mini App', web_app=WebAppInfo(WEB_APP_URL))])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True, input_field_placeholder='Paste a media link or choose a menu…')
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        'សួស្តី 👋\nផ្ញើ public media link ដែលអ្នកមានសិទ្ធិទាញយក ឬបើក Mini App។\n\nSend an authorized public media link to analyze it.',
-        reply_markup=home_keyboard(),
+        'សួស្តី 👋\nផ្ញើ public media link ដែលអ្នកមានសិទ្ធិទាញយក ឬជ្រើស Menu ខាងក្រោម។\n\nSend an authorized public media link or choose a menu.',
+        reply_markup=persistent_menu(),
     )
+    await update.effective_message.reply_text('⚡ Quick actions', reply_markup=home_keyboard())
+
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text('📋 Main Menu / ម៉ឺនុយមេ', reply_markup=persistent_menu())
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         '🔗 Paste a supported public URL. I will show metadata and available quality.\n'
         '🎬 MP4 / 🎵 MP3 are available when the source permits extraction.\n'
-        '🔒 Private/DRM-protected content is not bypassed.'
+        '🔒 Private/DRM-protected content is not bypassed.',
+        reply_markup=persistent_menu(),
     )
+
+
+async def handle_menu_name(message, name):
+    texts = {
+        '📥 Download':'📥 ផ្ញើ Link មកខ្ញុំ ដើម្បី Analyze និង Download។',
+        '🎵 MP3':'🎵 ផ្ញើ Link មកខ្ញុំ បន្ទាប់មកជ្រើស MP3។',
+        '🎬 MP4':'🎬 ផ្ញើ Link មកខ្ញុំ ហើយជ្រើស video quality។',
+        '🖼️ Image':'🖼️ Thumbnail នឹងបង្ហាញបើ source មាន។',
+        '📜 History':'📜 History មាននៅក្នុង Mini App។',
+        '⭐ Favorites':'⭐ Favorites មាននៅក្នុង Mini App។',
+        '📊 Statistics':'📊 Statistics នឹងបន្ថែមនៅ version បន្ទាប់។',
+        '🌐 Language':'🌐 Mini App supports Khmer + English settings.',
+        '⚙️ Settings':'⚙️ Settings មាននៅក្នុង Mini App។',
+        '❓ Help':'❓ ផ្ញើ /help សម្រាប់ជំនួយ។',
+    }
+    await message.reply_text(texts.get(name, name), reply_markup=persistent_menu())
 
 
 async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    name = q.data.split(':', 1)[1]
-    texts = {
-        '📥 Download':'ផ្ញើ Link មកខ្ញុំ ដើម្បី Analyze និង Download។',
-        '🎵 MP3':'ផ្ញើ Link ហើយជ្រើស 🎵 MP3។',
-        '🎬 MP4':'ផ្ញើ Link ហើយជ្រើស quality។',
-        '🖼️ Image':'Thumbnail នឹងបង្ហាញបើ source មាន។',
-        '📜 History':'History មាននៅក្នុង Mini App។',
-        '⭐ Favorites':'Favorites មាននៅក្នុង Mini App។',
-        '📊 Statistics':'Statistics នឹងបន្ថែមនៅ version បន្ទាប់។',
-        '🌐 Language':'Mini App supports Khmer + English settings.',
-        '⚙️ Settings':'Settings មាននៅក្នុង Mini App។',
-        '❓ Help':'ផ្ញើ /help សម្រាប់ជំនួយ។',
-    }
-    await q.message.reply_text(texts.get(name, name))
+    await handle_menu_name(q.message, q.data.split(':', 1)[1])
 
 
 async def analyze_and_reply(message, context, url):
@@ -69,7 +85,7 @@ async def analyze_and_reply(message, context, url):
         rows.append([InlineKeyboardButton('🎵 MP3', callback_data='dl:mp3:192')])
         dur = data.get('duration')
         duration = f'{dur//60}:{dur%60:02d}' if isinstance(dur, int) else '—'
-        text = f"✅ Link Detected\n\n🎬 {data.get('title','Media')}\n🌐 {data.get('extractor') or 'Media'}\n⏱ {duration}\n\nជ្រើស format / quality:"
+        text = f"✅ Link Detected\n\n🎬 {data.get('title','Media')}\n🌐 {data.get('platform') or data.get('extractor') or 'Media'}\n⏱ {duration}\n\nជ្រើស format / quality:"
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(rows))
         if data.get('thumbnail'):
             try:
@@ -88,10 +104,13 @@ async def analyze_and_reply(message, context, url):
         await msg.edit_text(text)
 
 
-async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = (update.effective_message.text or '').strip()
-    if url.startswith(('http://', 'https://')):
-        await analyze_and_reply(update.effective_message, context, url)
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.effective_message.text or '').strip()
+    if text in {item for row in MENU for item in row}:
+        return await handle_menu_name(update.effective_message, text)
+    if text.startswith(('http://', 'https://')):
+        return await analyze_and_reply(update.effective_message, context, text)
+    await update.effective_message.reply_text('🔗 សូមផ្ញើ media link ឬជ្រើស Menu ខាងក្រោម។', reply_markup=persistent_menu())
 
 
 async def webapp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,17 +120,11 @@ async def webapp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = json.loads(raw)
     except Exception:
         return await message.reply_text('❌ Invalid Mini App request.')
-
     url = str(data.get('url', '')).strip()
-    kind = str(data.get('kind', 'mp4')).lower()
     if not url.startswith(('http://', 'https://')):
         return await message.reply_text('❌ Invalid URL from Mini App.')
-
     context.user_data['url'] = url
-    if data.get('action') == 'download' and kind in {'mp3', 'mp4'}:
-        await analyze_and_reply(message, context, url)
-    else:
-        await analyze_and_reply(message, context, url)
+    await analyze_and_reply(message, context, url)
 
 
 async def dl_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,25 +142,16 @@ async def dl_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise FileNotFoundError(path)
         size = os.path.getsize(path)
         if size > 49 * 1024 * 1024:
-            return await status.edit_text('⚠️ File ធំពេកសម្រាប់ Telegram upload limit ដែល project នេះកំណត់ (49 MB)។ សូមជ្រើស quality ទាបជាង។')
-
+            return await status.edit_text('⚠️ File ធំពេក (49 MB limit)។ សូមជ្រើស quality ទាបជាង។')
         size_mb = size / (1024 * 1024)
         format_name = 'MP3 Audio' if kind == 'mp3' else f'MP4 {quality}p'
         media_caption = f'✅ Download successful\n📦 {format_name} • {size_mb:.1f} MB'
-
         with open(path, 'rb') as f:
             if kind == 'mp3':
                 await q.message.reply_audio(f, caption=media_caption)
             else:
                 await q.message.reply_video(f, caption=media_caption, supports_streaming=True)
-
-        await status.edit_text(
-            '✅ ទាញយកបានជោគជ័យ!\n'
-            'Download completed successfully.\n\n'
-            f'📦 Format: {format_name}\n'
-            f'💾 Size: {size_mb:.1f} MB\n'
-            '🎉 File បានផ្ញើរួចរាល់។'
-        )
+        await status.edit_text(f'✅ ទាញយកបានជោគជ័យ!\nDownload completed successfully.\n\n📦 Format: {format_name}\n💾 Size: {size_mb:.1f} MB\n🎉 File បានផ្ញើរួចរាល់។')
     except Exception:
         logger.exception('Download failed: kind=%s quality=%s url=%s', kind, quality, url)
         await status.edit_text('❌ Download/convert failed. សូមសាក quality ផ្សេង ឬ link ផ្សេង។')
@@ -167,13 +171,22 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception('Unhandled Telegram error', exc_info=err)
 
 
+async def post_init(application):
+    await application.bot.set_my_commands([
+        BotCommand('start', 'Start bot / ចាប់ផ្តើម'),
+        BotCommand('menu', 'Show main menu / ម៉ឺនុយ'),
+        BotCommand('help', 'Help / ជំនួយ'),
+    ])
+
+
 def build_app():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('menu', menu_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
     app.add_handler(CallbackQueryHandler(dl_cb, pattern=r'^dl:'))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern=r'^menu:'))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, webapp_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.add_error_handler(error_handler)
     return app
