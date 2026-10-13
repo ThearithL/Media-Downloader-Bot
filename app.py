@@ -4,7 +4,7 @@ import threading
 
 from flask import Flask, jsonify, render_template, request
 
-from bot import build_app
+from bot import build_app, post_init as bot_post_init
 from config import BOT_TOKEN
 from downloader import analyze
 
@@ -25,8 +25,6 @@ def telegram_runner():
         logger.error(startup_error["message"])
         return
 
-    # Python 3.12 does not automatically create an asyncio loop in a new
-    # thread. python-telegram-bot run_polling() expects one to exist.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -34,11 +32,13 @@ def telegram_runner():
         tg = build_app()
 
         async def on_start(application):
-            # getUpdates cannot run while a webhook is configured.
+            # Preserve bot.py startup setup (Telegram slash commands) while also
+            # preparing polling. Previously this hook replaced bot.py post_init.
+            await bot_post_init(application)
             await application.bot.delete_webhook(drop_pending_updates=False)
             ready.set()
             startup_error["message"] = ""
-            logger.info("Telegram polling ready; webhook removed")
+            logger.info("Telegram polling ready; commands configured; webhook removed")
 
         tg.post_init = on_start
         tg.run_polling(
@@ -77,11 +77,7 @@ def health():
 @web.get("/health/telegram")
 def telegram_health():
     status = 200 if ready.is_set() else 503
-    return jsonify(
-        ok=ready.is_set(),
-        mode="polling",
-        error=startup_error["message"],
-    ), status
+    return jsonify(ok=ready.is_set(), mode="polling", error=startup_error["message"]), status
 
 
 @web.post("/api/analyze")
@@ -92,13 +88,18 @@ def api_analyze():
         return jsonify(error="Invalid URL"), 400
     try:
         return jsonify(analyze(url))
-    except Exception:
+    except Exception as exc:
+        detail = str(exc).lower()
         logger.exception("Analyze failed")
+        if "429" in detail or "too many requests" in detail:
+            return jsonify(error="Source rate limited this server. Please try again later."), 429
+        if "403" in detail or "forbidden" in detail:
+            return jsonify(error="Source denied this server request."), 403
+        if "sign in" in detail or "cookies" in detail:
+            return jsonify(error="This media requires authorized login/cookies."), 403
         return jsonify(error="Unsupported/private/unavailable URL"), 400
 
 
-# Keep this endpoint temporarily so stale webhook retries receive 200 while
-# delete_webhook propagates. New Telegram updates are handled by polling.
 @web.post("/telegram/webhook")
 def retired_webhook():
     return "ok", 200
