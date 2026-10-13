@@ -1,12 +1,16 @@
+import logging
 import os
 import shutil
+import subprocess
 import tempfile
 from urllib.parse import urlparse
 
+import yt_dlp
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 # Public/authorized media only. No DRM/private/login bypass.
+logger = logging.getLogger('mediamate.downloader')
 
 BASE_OPTS = {
     'quiet': True,
@@ -24,6 +28,8 @@ BASE_OPTS = {
     'trim_file_name': 80,
     'js_runtimes': {'deno': {}},
 }
+
+_DIAGNOSTICS_LOGGED = False
 
 
 def _host(url):
@@ -55,19 +61,42 @@ def _platform(url):
     return None
 
 
+def _safe_version(command):
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+        line = (proc.stdout or proc.stderr or '').strip().splitlines()
+        return line[0][:160] if line else 'unknown'
+    except Exception as exc:
+        return f'unavailable ({type(exc).__name__})'
+
+
+def _log_youtube_diagnostics_once():
+    global _DIAGNOSTICS_LOGGED
+    if _DIAGNOSTICS_LOGGED:
+        return
+    _DIAGNOSTICS_LOGGED = True
+    server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
+    logger.warning(
+        'YouTube diagnostics: yt-dlp=%s deno=%s deno_path=%s ffmpeg_path=%s bgutil_server_home=%s bgutil_server_exists=%s',
+        getattr(getattr(yt_dlp, 'version', None), '__version__', 'unknown'),
+        _safe_version(['deno', '--version']),
+        shutil.which('deno'),
+        shutil.which('ffmpeg'),
+        server_home,
+        os.path.isdir(server_home),
+    )
+
+
 def _youtube_attempts():
-    # First let the current yt-dlp build choose its maintained YouTube clients.
-    # If that fails, try the documented mweb + bgutil PO-token setup.
-    # Do not use cookies/account authentication or bypass private/DRM media.
     server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
     return [
-        {},
-        {'extractor_args': {
+        ('auto', {}),
+        ('mweb+bgutil', {'extractor_args': {
             'youtube': {'player_client': ['mweb']},
             'youtubepot-bgutilscript': {'server_home': [server_home]},
-        }},
-        {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}},
-        {'extractor_args': {'youtube': {'player_client': ['android_vr']}}},
+        }}),
+        ('web_embedded', {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}}),
+        ('android_vr', {'extractor_args': {'youtube': {'player_client': ['android_vr']}}}),
     ]
 
 
@@ -81,21 +110,31 @@ def _should_stop_youtube_retry(exc):
 
 
 def _extract(url, download=False, extra=None):
-    attempts = _youtube_attempts() if _is_youtube(url) else [{}]
+    youtube = _is_youtube(url)
+    if youtube:
+        _log_youtube_diagnostics_once()
+    attempts = _youtube_attempts() if youtube else [('default', {})]
     last_error = None
-    for attempt in attempts:
+    for label, attempt in attempts:
         opts = dict(BASE_OPTS)
         opts.update(attempt)
         if extra:
             opts.update(extra)
+        if youtube:
+            logger.warning('YouTube extraction attempt=%s video_host=%s download=%s', label, _host(url), download)
         try:
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=download)
                 filename = ydl.prepare_filename(info) if download else None
+                if youtube:
+                    logger.warning('YouTube extraction success attempt=%s extractor=%s formats=%s', label, info.get('extractor'), len(info.get('formats') or []))
                 return info, filename
         except DownloadError as exc:
             last_error = exc
-            if _is_youtube(url) and _should_stop_youtube_retry(exc):
+            if youtube:
+                logger.warning('YouTube extraction failed attempt=%s error=%s', label, str(exc)[:700])
+            if youtube and _should_stop_youtube_retry(exc):
+                logger.warning('YouTube retries stopped because the source reported an access/IP/auth restriction')
                 break
     raise last_error or DownloadError('Unable to extract media information')
 
@@ -128,7 +167,6 @@ def download(url, kind='mp4', quality='720'):
     outdir = tempfile.mkdtemp(prefix='media_')
     tmpl = os.path.join(outdir, '%(title).60s-%(id)s.%(ext)s')
     has_ffmpeg = bool(shutil.which('ffmpeg'))
-
     try:
         if kind == 'mp3':
             if not has_ffmpeg:
@@ -147,7 +185,6 @@ def download(url, kind='mp4', quality='720'):
             extra = {'format': fmt, 'outtmpl': tmpl}
             if has_ffmpeg:
                 extra['merge_output_format'] = 'mp4'
-
         info, path = _extract(url, download=True, extra=extra)
         if kind == 'mp3':
             path = os.path.splitext(path)[0] + '.mp3'
@@ -155,7 +192,6 @@ def download(url, kind='mp4', quality='720'):
             candidate = os.path.splitext(path or '')[0] + '.mp4'
             if candidate and os.path.exists(candidate):
                 path = candidate
-
         if not path or not os.path.exists(path):
             path = _find_output(outdir, kind)
         if not path or not os.path.exists(path):
