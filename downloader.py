@@ -60,12 +60,26 @@ def _platform(url):
 
 
 def _youtube_attempts():
-    # Fast path first; fallbacks are used only when YouTube rejects it.
+    # Let current yt-dlp choose its maintained default clients first. Forced
+    # client profiles can become stale when YouTube changes Innertube/player
+    # behavior. These fallbacks remain useful for public videos that work with
+    # a token-free client. We do not use account cookies or bypass private/DRM.
     return [
-        {'extractor_args': {'youtube': {'player_client': ['default']}}},
+        {},
         {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}},
-        {'extractor_args': {'youtube': {'player_client': ['web', 'mweb']}}},
+        {'extractor_args': {'youtube': {'player_client': ['web_safari']}}},
+        {'extractor_args': {'youtube': {'player_client': ['android_vr']}}},
     ]
+
+
+def _should_stop_youtube_retry(exc):
+    detail = str(exc).lower()
+    # Retrying several clients against an already rate-limited/blocked host only
+    # makes the situation worse. Return the first useful error immediately.
+    return any(marker in detail for marker in (
+        '429', 'too many requests', '403', 'forbidden',
+        'sign in', 'login required', 'private video', 'members-only',
+    ))
 
 
 def _extract(url, download=False, extra=None):
@@ -83,6 +97,8 @@ def _extract(url, download=False, extra=None):
                 return info, filename
         except DownloadError as exc:
             last_error = exc
+            if _is_youtube(url) and _should_stop_youtube_retry(exc):
+                break
     raise last_error or DownloadError('Unable to extract media information')
 
 
@@ -126,9 +142,6 @@ def download(url, kind='mp4', quality='720'):
             }
         else:
             q = int(quality) if str(quality).isdigit() else 720
-            # Progressive MP4 is fastest because it avoids merge/conversion.
-            # Only use separate video+audio streams when a progressive stream
-            # at the requested quality is unavailable and FFmpeg exists.
             if has_ffmpeg:
                 fmt = f'best[ext=mp4][height<={q}]/best[height<={q}]/bestvideo[height<={q}]+bestaudio/best'
             else:
