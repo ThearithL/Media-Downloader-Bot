@@ -109,8 +109,6 @@ async def webapp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['url'] = url
     if data.get('action') == 'download' and kind in {'mp3', 'mp4'}:
-        # Analyze first so the user gets safe format/quality choices. For MP3,
-        # immediately expose the normal download callback after analysis.
         await analyze_and_reply(message, context, url)
     else:
         await analyze_and_reply(message, context, url)
@@ -132,12 +130,24 @@ async def dl_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size = os.path.getsize(path)
         if size > 49 * 1024 * 1024:
             return await status.edit_text('⚠️ File ធំពេកសម្រាប់ Telegram upload limit ដែល project នេះកំណត់ (49 MB)។ សូមជ្រើស quality ទាបជាង។')
+
+        size_mb = size / (1024 * 1024)
+        format_name = 'MP3 Audio' if kind == 'mp3' else f'MP4 {quality}p'
+        media_caption = f'✅ Download successful\n📦 {format_name} • {size_mb:.1f} MB'
+
         with open(path, 'rb') as f:
             if kind == 'mp3':
-                await q.message.reply_audio(f, caption='✅ Done')
+                await q.message.reply_audio(f, caption=media_caption)
             else:
-                await q.message.reply_video(f, caption='✅ Done', supports_streaming=True)
-        await status.delete()
+                await q.message.reply_video(f, caption=media_caption, supports_streaming=True)
+
+        await status.edit_text(
+            '✅ ទាញយកបានជោគជ័យ!\n'
+            'Download completed successfully.\n\n'
+            f'📦 Format: {format_name}\n'
+            f'💾 Size: {size_mb:.1f} MB\n'
+            '🎉 File បានផ្ញើរួចរាល់។'
+        )
     except Exception:
         logger.exception('Download failed: kind=%s quality=%s url=%s', kind, quality, url)
         await status.edit_text('❌ Download/convert failed. សូមសាក quality ផ្សេង ឬ link ផ្សេង។')
@@ -149,8 +159,6 @@ async def dl_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     err = context.error
     if isinstance(err, Conflict):
-        # Render zero-downtime deploys can briefly overlap old/new instances.
-        # PTB retries polling automatically after the old instance exits.
         logger.warning('Temporary Telegram getUpdates conflict during deploy; retrying.')
         return
     if isinstance(err, (TimedOut, NetworkError)):
