@@ -1,11 +1,17 @@
 services:
   - type: web
     name: mediamate-telegram-bot
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /health
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.8
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEB_APP_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
