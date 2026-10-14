@@ -26,12 +26,13 @@
       <div>
         <h3 id="title"></h3><p id="meta"></p><div id="qualities" class="chips"></div>
         <div class="actions"><button id="mp3Action">🎵 MP3</button><button id="mp4Action">🎬 MP4</button><button id="favoriteAction">⭐ Favorite</button></div>
-        <p class="note">Choose MP3/MP4 to send this link to the Telegram bot for download.</p>
+        <p class="note">Select a quality, then choose MP3/MP4. Open the Mini App from the bot keyboard so Telegram can receive the request.</p>
       </div>
     </section>
   </section>
 
   <section id="historyView" class="view hidden"><section class="hero"><h2>📜 History</h2><div id="historyList" class="list"></div><button id="clearHistory" class="secondary">Clear history</button></section></section>
+  <section id="favoritesView" class="view hidden"><section class="hero"><h2>⭐ Favorites</h2><div id="favoritesList" class="list"></div><button id="clearFavorites" class="secondary">Clear favorites</button></section></section>
   <section id="settingsView" class="view hidden"><section class="hero"><h2>⚙️ Settings</h2><label>Language<select id="language"><option value="en">English</option><option value="km">ខ្មែរ</option></select></label><label class="setting-row"><span>Open expanded</span><input id="expanded" type="checkbox"></label><p class="note">Settings are saved on this device.</p></section></section>
 
   <nav>
@@ -39,6 +40,7 @@
     <button data-tab="mp3">🎵<span>MP3</span></button>
     <button data-tab="mp4">🎬<span>MP4</span></button>
     <button data-tab="history">📜<span>History</span></button>
+    <button data-tab="favorites">⭐<span>Favorites</span></button>
     <button data-tab="settings">⚙️<span>Settings</span></button>
   </nav>
 </main>
