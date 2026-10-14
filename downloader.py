@@ -73,6 +73,15 @@ def _safe_version(command):
         return f'unavailable ({type(exc).__name__})'
 
 
+def _youtube_proxy():
+    """Optional alternate egress for YouTube only.
+
+    Configure with YTDLP_PROXY_URL (http/https/socks URL). Keeping this scoped
+    to YouTube avoids routing Telegram/API traffic through the proxy.
+    """
+    return os.getenv('YTDLP_PROXY_URL', '').strip()
+
+
 def _log_youtube_diagnostics_once():
     global _DIAGNOSTICS_LOGGED
     if _DIAGNOSTICS_LOGGED:
@@ -81,7 +90,8 @@ def _log_youtube_diagnostics_once():
     server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
     base_url = os.getenv('BGUTIL_BASE_URL', 'http://127.0.0.1:4416')
     logger.warning(
-        'YouTube diagnostics: yt-dlp=%s deno=%s deno_path=%s ffmpeg_path=%s bgutil_server_home=%s bgutil_server_exists=%s bgutil_base_url=%s',
+        'YouTube diagnostics: yt-dlp=%s deno=%s deno_path=%s ffmpeg_path=%s '
+        'bgutil_server_home=%s bgutil_server_exists=%s bgutil_base_url=%s youtube_proxy_configured=%s',
         getattr(getattr(yt_dlp, 'version', None), '__version__', 'unknown'),
         _safe_version(['deno', '--version']),
         shutil.which('deno'),
@@ -89,6 +99,7 @@ def _log_youtube_diagnostics_once():
         server_home,
         os.path.isdir(server_home),
         base_url,
+        bool(_youtube_proxy()),
     )
 
 
@@ -99,7 +110,11 @@ def _youtube_attempts():
             'youtube': {'player_client': ['mweb']},
             'youtubepot-bgutilhttp': {'base_url': [base_url]},
         }}),
+        # web_safari can expose HLS formats without a GVS PO token for some
+        # public videos and is useful as a fallback when one player client is challenged.
+        ('web_safari', {'extractor_args': {'youtube': {'player_client': ['web_safari']}}}),
         ('web_embedded', {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}}),
+        ('android_vr', {'extractor_args': {'youtube': {'player_client': ['android_vr']}}}),
     ]
 
 
@@ -113,12 +128,21 @@ def _looks_like_server_block(exc):
 
 
 def _should_stop_youtube_retry(exc):
+    """Stop only for genuine content/account restrictions.
+
+    Anti-bot/IP errors are intentionally *not* terminal here because another
+    YouTube client may still work, especially when YTDLP_PROXY_URL is set.
+    """
     detail = str(exc).lower()
     return any(marker in detail for marker in (
-        'failed to extract any player response',
-        '429', 'too many requests', '403', 'forbidden',
-        'sign in', 'login required', 'private video', 'members-only',
-        'ip is likely being blocked', 'confirm you’re not a bot', "confirm you're not a bot",
+        'private video',
+        'this video is private',
+        'members-only',
+        'members only',
+        'age-restricted',
+        'age restricted',
+        'premium-only',
+        'premium only',
     ))
 
 
@@ -129,20 +153,29 @@ def _extract(url, download=False, extra=None):
     attempts = _youtube_attempts() if youtube else [('default', {})]
     last_error = None
     server_block_count = 0
+    youtube_proxy = _youtube_proxy() if youtube else ''
 
     for label, attempt in attempts:
         opts = dict(BASE_OPTS)
         opts.update(attempt)
         if extra:
             opts.update(extra)
+        if youtube_proxy:
+            opts['proxy'] = youtube_proxy
         if youtube:
-            logger.warning('YouTube extraction attempt=%s video_host=%s download=%s', label, _host(url), download)
+            logger.warning(
+                'YouTube extraction attempt=%s video_host=%s download=%s proxy=%s',
+                label, _host(url), download, bool(youtube_proxy),
+            )
         try:
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=download)
                 filename = ydl.prepare_filename(info) if download else None
                 if youtube:
-                    logger.warning('YouTube extraction success attempt=%s extractor=%s formats=%s', label, info.get('extractor'), len(info.get('formats') or []))
+                    logger.warning(
+                        'YouTube extraction success attempt=%s extractor=%s formats=%s',
+                        label, info.get('extractor'), len(info.get('formats') or []),
+                    )
                 return info, filename
         except DownloadError as exc:
             last_error = exc
@@ -151,13 +184,14 @@ def _extract(url, download=False, extra=None):
                 if _looks_like_server_block(exc):
                     server_block_count += 1
             if youtube and _should_stop_youtube_retry(exc):
-                logger.warning('YouTube retries stopped early for fast response because the source reported a player/access/IP/auth restriction')
+                logger.warning('YouTube retries stopped because the media itself requires restricted/account access')
                 break
 
     if youtube and server_block_count:
         raise DownloadError(
             'YouTube rejected player responses from this server network. '
-            'The runtime and PO-token provider are installed, but this hosting egress cannot currently obtain a usable player response.'
+            'The runtime and PO-token provider are installed, but this hosting egress cannot currently obtain a usable player response. '
+            'Configure YTDLP_PROXY_URL or run the downloader on a different egress IP.'
         )
     raise last_error or DownloadError('Unable to extract media information')
 
