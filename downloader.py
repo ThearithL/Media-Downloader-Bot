@@ -16,11 +16,12 @@ BASE_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'noplaylist': True,
-    'socket_timeout': 15,
-    'retries': 1,
-    'fragment_retries': 1,
-    'extractor_retries': 1,
-    'file_access_retries': 1,
+    # Keep Telegram interactions responsive on slow/blocked hosting egress.
+    'socket_timeout': 7,
+    'retries': 0,
+    'fragment_retries': 0,
+    'extractor_retries': 0,
+    'file_access_retries': 0,
     'concurrent_fragment_downloads': 8,
     'buffersize': 1024 * 1024,
     'http_chunk_size': 10 * 1024 * 1024,
@@ -63,7 +64,7 @@ def _platform(url):
 
 def _safe_version(command):
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)
         line = (proc.stdout or proc.stderr or '').strip().splitlines()
         return line[0][:160] if line else 'unknown'
     except Exception as exc:
@@ -90,19 +91,14 @@ def _log_youtube_diagnostics_once():
 
 
 def _youtube_attempts():
-    # Prefer the provider project's recommended always-running local HTTP
-    # provider. Keep the script provider and one unauthenticated client as
-    # fallbacks so Render-only deployments remain self-contained.
-    server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
+    # Use the local always-running HTTP PO-token provider first. A single
+    # lightweight fallback is enough; repeated blocked attempts make Telegram
+    # feel frozen without improving success on the same Render egress.
     base_url = os.getenv('BGUTIL_BASE_URL', 'http://127.0.0.1:4416')
     return [
         ('mweb+bgutil-http', {'extractor_args': {
             'youtube': {'player_client': ['mweb']},
             'youtubepot-bgutilhttp': {'base_url': [base_url]},
-        }}),
-        ('mweb+bgutil-script', {'extractor_args': {
-            'youtube': {'player_client': ['mweb']},
-            'youtubepot-bgutilscript': {'server_home': [server_home]},
         }}),
         ('web_embedded', {'extractor_args': {'youtube': {'player_client': ['web_embedded']}}}),
     ]
@@ -119,7 +115,11 @@ def _looks_like_server_block(exc):
 
 def _should_stop_youtube_retry(exc):
     detail = str(exc).lower()
+    # Player-response failure on Render has already been reproduced with the
+    # configured runtime/provider. Fail immediately instead of waiting through
+    # several equivalent clients.
     return any(marker in detail for marker in (
+        'failed to extract any player response',
         '429', 'too many requests', '403', 'forbidden',
         'sign in', 'login required', 'private video', 'members-only',
         'ip is likely being blocked', 'confirm you’re not a bot', "confirm you're not a bot",
@@ -155,10 +155,10 @@ def _extract(url, download=False, extra=None):
                 if _looks_like_server_block(exc):
                     server_block_count += 1
             if youtube and _should_stop_youtube_retry(exc):
-                logger.warning('YouTube retries stopped because the source reported an access/IP/auth restriction')
+                logger.warning('YouTube retries stopped early for fast response because the source reported a player/access/IP/auth restriction')
                 break
 
-    if youtube and server_block_count >= len(attempts):
+    if youtube and server_block_count:
         raise DownloadError(
             'YouTube rejected player responses from this server network. '
             'The runtime and PO-token provider are installed, but this hosting egress cannot currently obtain a usable player response.'
