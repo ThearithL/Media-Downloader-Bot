@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import threading
 
 from flask import Flask, jsonify, render_template, request
@@ -16,6 +17,7 @@ logger = logging.getLogger("mediamate")
 web = Flask(__name__)
 ready = threading.Event()
 startup_error = {"message": ""}
+TEST_MODE = os.getenv("YOUTUBE_TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def telegram_runner():
@@ -32,8 +34,6 @@ def telegram_runner():
         tg = build_app()
 
         async def on_start(application):
-            # Preserve bot.py startup setup (Telegram slash commands) while also
-            # preparing polling. Previously this hook replaced bot.py post_init.
             await bot_post_init(application)
             await application.bot.delete_webhook(drop_pending_updates=False)
             ready.set()
@@ -56,7 +56,10 @@ def telegram_runner():
             loop.close()
 
 
-threading.Thread(target=telegram_runner, daemon=True, name="telegram-polling").start()
+if TEST_MODE:
+    logger.warning("YOUTUBE_TEST_MODE enabled: Telegram polling is disabled for this service")
+else:
+    threading.Thread(target=telegram_runner, daemon=True, name="telegram-polling").start()
 
 
 @web.get("/")
@@ -68,14 +71,17 @@ def index():
 def health():
     return jsonify(
         ok=True,
+        test_mode=TEST_MODE,
         telegram_ready=ready.is_set(),
-        telegram_mode="polling",
+        telegram_mode="disabled-test" if TEST_MODE else "polling",
         telegram_error=startup_error["message"],
     )
 
 
 @web.get("/health/telegram")
 def telegram_health():
+    if TEST_MODE:
+        return jsonify(ok=True, mode="disabled-test", error=""), 200
     status = 200 if ready.is_set() else 503
     return jsonify(ok=ready.is_set(), mode="polling", error=startup_error["message"]), status
 
@@ -95,6 +101,8 @@ def api_analyze():
             return jsonify(error="Source rate limited this server. Please try again later."), 429
         if "403" in detail or "forbidden" in detail:
             return jsonify(error="Source denied this server request."), 403
+        if "player response" in detail or "hosting egress" in detail:
+            return jsonify(error="YouTube rejected player responses from this server network."), 502
         if "sign in" in detail or "cookies" in detail:
             return jsonify(error="This media requires authorized login/cookies."), 403
         return jsonify(error="Unsupported/private/unavailable URL"), 400
