@@ -62,12 +62,16 @@ def friendly_extract_error(exc):
         return '⏳ YouTube/Source កំពុង rate-limit server (429)។ សូមរង់ចាំបន្តិច ហើយសាកម្តងទៀត។'
     if '403' in detail or 'forbidden' in detail:
         return '🚫 YouTube/Source បានបដិសេធ request ពី server (403)។ សូមសាកពេលក្រោយ ឬ source ផ្សេង។'
-    if 'sign in' in detail or 'cookies' in detail or 'login' in detail:
-        return '🔐 Media នេះត្រូវការ authorized login/cookies។ Bot មិន bypass private/restricted media ទេ។'
+    # YouTube may challenge a datacenter/server IP even for a normal public
+    # video. Do not incorrectly tell the user that the media itself is private.
+    if "confirm you're not a bot" in detail or 'confirm you’re not a bot' in detail:
+        return '⚠️ YouTube កំពុង challenge/block request ពី Render server នេះ។ Video អាចជា public ប៉ុន្តែ server មិនអាចទាញវាបានឥឡូវនេះ។\n\nYouTube is asking this server to verify it is not a bot. សូមសាកពេលក្រោយ។'
+    if 'hosting egress' in detail or 'player response' in detail:
+        return '⚠️ YouTube មិនបានផ្តល់ usable player response ទៅ Render server។ Video អាចជា public ប៉ុន្តែ YouTube server access ត្រូវបានរារាំង។ សូមសាកពេលក្រោយ។'
+    if 'sign in' in detail or 'cookies' in detail or 'login required' in detail:
+        return '🔐 Media នេះពិតជាត្រូវការ authorized login/cookies ឬមាន access restriction។ Bot មិន bypass private/restricted media ទេ។'
     if 'javascript runtime' in detail or 'deno' in detail or 'ejs' in detail:
         return '⚙️ Server ខ្វះ JavaScript runtime សម្រាប់ YouTube extraction។ ត្រូវ deploy ជា Docker ដែលមាន Deno។'
-    if 'player response' in detail:
-        return '❌ YouTube extraction មិនបានទទួល player response។ yt-dlp/runtime ឬ YouTube server access ត្រូវបានរារាំង។'
     if 'unsupported url' in detail or 'unsupported' in detail:
         return '❌ Link នេះមិនមែនជា supported media link ទេ។ សូមផ្ញើ YouTube, TikTok, Facebook, Instagram ឬ public media link ដែល bot អាច extract បាន។'
     return '❌ មិនអាច Analyze Link នេះបានទេ។ Source អាចមិនមែនជា media, private, expired ឬ unavailable។'
