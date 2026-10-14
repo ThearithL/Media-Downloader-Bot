@@ -7,8 +7,10 @@ log() {
 
 BGUTIL_PID=""
 WARP_PID=""
+TOR_PID=""
 
 cleanup() {
+  [ -n "$TOR_PID" ] && kill "$TOR_PID" 2>/dev/null || true
   [ -n "$WARP_PID" ] && kill "$WARP_PID" 2>/dev/null || true
   [ -n "$BGUTIL_PID" ] && kill "$BGUTIL_PID" 2>/dev/null || true
 }
@@ -21,6 +23,55 @@ start_bgutil() {
     exec deno run --allow-env --allow-net --allow-ffi=. --allow-read=. src/main.ts --host 127.0.0.1 --port 4416
   ) &
   BGUTIL_PID=$!
+}
+
+setup_tor_proxy() {
+  if [ "${TOR_ENABLED:-1}" != "1" ]; then
+    log "Tor disabled by TOR_ENABLED"
+    return 1
+  fi
+
+  if ! command -v tor >/dev/null 2>&1; then
+    log "Tor binary is unavailable"
+    return 1
+  fi
+
+  workdir=/tmp/tor-data
+  rm -rf "$workdir"
+  mkdir -p "$workdir"
+  chown debian-tor:debian-tor "$workdir" 2>/dev/null || true
+
+  log "Starting Tor SOCKS5 proxy on 127.0.0.1:9050"
+  tor -f /dev/null \
+    --User debian-tor \
+    --RunAsDaemon 0 \
+    --SocksPort 127.0.0.1:9050 \
+    --DataDirectory "$workdir" \
+    --Log "notice file /tmp/tor.log" >/tmp/tor-stdout.log 2>&1 &
+  TOR_PID=$!
+
+  attempt=1
+  while [ "$attempt" -le 30 ]; do
+    if curl -fsS --max-time 10 --proxy socks5h://127.0.0.1:9050 \
+      https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q '^ip='; then
+      export YTDLP_PROXY_URL="socks5://127.0.0.1:9050"
+      log "Tor proxy is ready; YouTube will use Tor egress"
+      return 0
+    fi
+    if ! kill -0 "$TOR_PID" 2>/dev/null; then
+      log "Tor exited before SOCKS5 became ready"
+      [ -s /tmp/tor.log ] && tail -n 5 /tmp/tor.log || true
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+
+  log "Tor did not become ready; falling back to WARP/direct egress"
+  kill "$TOR_PID" 2>/dev/null || true
+  TOR_PID=""
+  unset YTDLP_PROXY_URL 2>/dev/null || true
+  return 1
 }
 
 setup_warp_proxy() {
@@ -92,7 +143,9 @@ CFG
 }
 
 start_bgutil
-setup_warp_proxy || true
+if ! setup_tor_proxy; then
+  setup_warp_proxy || true
+fi
 
 cd /app || exit 1
 log "Starting Media Downloader Bot"
