@@ -30,6 +30,17 @@ def persistent_menu():
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True, input_field_placeholder='Paste a media link or choose a menu…')
 
 
+def format_file_size(size):
+    if size is None:
+        return ''
+    size = int(size)
+    if size < 1024:
+        return f' • {size} B'
+    if size < 1024 * 1024:
+        return f' • {size / 1024:.1f} KB'
+    return f' • {size / (1024 * 1024):.2f} MB'
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text('សួស្តី 👋\nផ្ញើ public media link ដែលអ្នកមានសិទ្ធិទាញយក ឬជ្រើស Menu ខាងក្រោម។\n\nSend an authorized public media link or choose a menu.', reply_markup=persistent_menu())
     await update.effective_message.reply_text('⚡ Quick actions', reply_markup=home_keyboard())
@@ -62,8 +73,6 @@ def friendly_extract_error(exc):
         return '⏳ YouTube/Source កំពុង rate-limit server (429)។ សូមរង់ចាំបន្តិច ហើយសាកម្តងទៀត។'
     if '403' in detail or 'forbidden' in detail:
         return '🚫 YouTube/Source បានបដិសេធ request ពី server (403)។ សូមសាកពេលក្រោយ ឬ source ផ្សេង។'
-    # YouTube may challenge a datacenter/server IP even for a normal public
-    # video. Do not incorrectly tell the user that the media itself is private.
     if "confirm you're not a bot" in detail or 'confirm you’re not a bot' in detail:
         return '⚠️ YouTube កំពុង challenge/block request ពី Render server នេះ។ Video អាចជា public ប៉ុន្តែ server មិនអាចទាញវាបានឥឡូវនេះ។\n\nYouTube is asking this server to verify it is not a bot. សូមសាកពេលក្រោយ។'
     if 'hosting egress' in detail or 'player response' in detail:
@@ -113,15 +122,28 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
-    if message.video: media, kind = message.video, 'Video'
-    elif message.photo: media, kind = message.photo[-1], 'Image'
-    elif message.animation: media, kind = message.animation, 'Animation'
-    elif message.audio: media, kind = message.audio, 'Audio'
-    elif message.document: media, kind = message.document, 'File'
-    else: return
-    size = getattr(media, 'file_size', None)
-    size_text = f' • {size / (1024 * 1024):.1f} MB' if size else ''
-    await message.reply_text(f'⚡ Received {kind}{size_text}\n✅ Bot បានទទួល file របស់អ្នកភ្លាមៗ។\n\nសម្រាប់ download/convert ពី social media សូមផ្ញើ public media link។', reply_markup=persistent_menu())
+    if message.video:
+        media, kind, icon = message.video, 'Video', '🎬'
+    elif message.photo:
+        media, kind, icon = message.photo[-1], 'Image', '🖼️'
+    elif message.animation:
+        media, kind, icon = message.animation, 'Animation', '🎞️'
+    elif message.audio:
+        media, kind, icon = message.audio, 'Audio', '🎵'
+    elif message.document:
+        media, kind, icon = message.document, 'File', '📄'
+    else:
+        return
+
+    size_text = format_file_size(getattr(media, 'file_size', None))
+    file_name = getattr(media, 'file_name', None)
+    name_text = f'\n📄 {file_name}' if file_name else ''
+    await message.reply_text(
+        f'{icon} {kind} received{size_text}{name_text}\n'
+        '✅ ទទួលបានជោគជ័យ។\n\n'
+        '🔗 ចង់ទាញយកពី YouTube / TikTok / Facebook / Instagram សូមផ្ញើ public media link។',
+        reply_markup=persistent_menu(),
+    )
 
 
 async def webapp_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
