@@ -76,24 +76,31 @@ def _log_youtube_diagnostics_once():
         return
     _DIAGNOSTICS_LOGGED = True
     server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
+    base_url = os.getenv('BGUTIL_BASE_URL', 'http://127.0.0.1:4416')
     logger.warning(
-        'YouTube diagnostics: yt-dlp=%s deno=%s deno_path=%s ffmpeg_path=%s bgutil_server_home=%s bgutil_server_exists=%s',
+        'YouTube diagnostics: yt-dlp=%s deno=%s deno_path=%s ffmpeg_path=%s bgutil_server_home=%s bgutil_server_exists=%s bgutil_base_url=%s',
         getattr(getattr(yt_dlp, 'version', None), '__version__', 'unknown'),
         _safe_version(['deno', '--version']),
         shutil.which('deno'),
         shutil.which('ffmpeg'),
         server_home,
         os.path.isdir(server_home),
+        base_url,
     )
 
 
 def _youtube_attempts():
-    # The PO-token provider is the maintained path for current mweb playback.
-    # Keep one secondary non-authenticated client as a fallback. Repeating many
-    # blocked clients only makes Telegram users wait for the same server-side result.
+    # Prefer the provider project's recommended always-running local HTTP
+    # provider. Keep the script provider and one unauthenticated client as
+    # fallbacks so Render-only deployments remain self-contained.
     server_home = os.getenv('BGUTIL_SERVER_HOME', '/opt/bgutil-ytdlp-pot-provider/server')
+    base_url = os.getenv('BGUTIL_BASE_URL', 'http://127.0.0.1:4416')
     return [
-        ('mweb+bgutil', {'extractor_args': {
+        ('mweb+bgutil-http', {'extractor_args': {
+            'youtube': {'player_client': ['mweb']},
+            'youtubepot-bgutilhttp': {'base_url': [base_url]},
+        }}),
+        ('mweb+bgutil-script', {'extractor_args': {
             'youtube': {'player_client': ['mweb']},
             'youtubepot-bgutilscript': {'server_home': [server_home]},
         }}),
