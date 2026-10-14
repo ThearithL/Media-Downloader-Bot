@@ -1,8 +1,10 @@
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -91,9 +93,6 @@ def _log_youtube_diagnostics_once():
 
 
 def _youtube_attempts():
-    # Use the local always-running HTTP PO-token provider first. A single
-    # lightweight fallback is enough; repeated blocked attempts make Telegram
-    # feel frozen without improving success on the same Render egress.
     base_url = os.getenv('BGUTIL_BASE_URL', 'http://127.0.0.1:4416')
     return [
         ('mweb+bgutil-http', {'extractor_args': {
@@ -115,9 +114,6 @@ def _looks_like_server_block(exc):
 
 def _should_stop_youtube_retry(exc):
     detail = str(exc).lower()
-    # Player-response failure on Render has already been reproduced with the
-    # configured runtime/provider. Fail immediately instead of waiting through
-    # several equivalent clients.
     return any(marker in detail for marker in (
         'failed to extract any player response',
         '429', 'too many requests', '403', 'forbidden',
@@ -190,8 +186,35 @@ def _find_output(outdir, kind):
     return max(media or files, key=os.path.getsize) if files else None
 
 
+def _telegram_safe_filename(path, kind):
+    """Rename media to a short ASCII filename before Telegram upload.
+
+    Telegram clients can display Khmer in captions/messages, but Unicode media
+    filenames may render as boxes/garbled glyphs on some client/platform
+    combinations. Keep the real Khmer title in the caption and use a portable
+    filename for the uploaded file itself.
+    """
+    if not path or not os.path.exists(path):
+        return path
+    ext = '.mp3' if kind == 'mp3' else (os.path.splitext(path)[1].lower() or '.mp4')
+    stem = os.path.splitext(os.path.basename(path))[0]
+    ascii_stem = unicodedata.normalize('NFKD', stem).encode('ascii', 'ignore').decode('ascii')
+    ascii_stem = re.sub(r'[^A-Za-z0-9._-]+', '-', ascii_stem).strip('-._')[:48]
+    if not ascii_stem:
+        ascii_stem = 'media'
+    safe_path = os.path.join(os.path.dirname(path), ascii_stem + ext)
+    if os.path.abspath(safe_path) != os.path.abspath(path):
+        # Avoid accidental collision when yt-dlp generated multiple files.
+        if os.path.exists(safe_path):
+            safe_path = os.path.join(os.path.dirname(path), f'{ascii_stem}-download{ext}')
+        os.replace(path, safe_path)
+    return safe_path
+
+
 def download(url, kind='mp4', quality='720'):
     outdir = tempfile.mkdtemp(prefix='media_')
+    # Keep source titles available to yt-dlp while downloading; sanitize only
+    # the final upload filename so Khmer metadata/captions are not destroyed.
     tmpl = os.path.join(outdir, '%(title).60s-%(id)s.%(ext)s')
     has_ffmpeg = bool(shutil.which('ffmpeg'))
     try:
@@ -223,6 +246,7 @@ def download(url, kind='mp4', quality='720'):
             path = _find_output(outdir, kind)
         if not path or not os.path.exists(path):
             raise RuntimeError('Downloaded media file was not created')
+        path = _telegram_safe_filename(path, kind)
         return path, outdir
     except Exception:
         shutil.rmtree(outdir, ignore_errors=True)
